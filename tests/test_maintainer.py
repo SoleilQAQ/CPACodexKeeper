@@ -125,6 +125,36 @@ class MaintainerTests(unittest.TestCase):
         self.assertEqual(kwargs["disabled"], True)
         self.assertEqual(self.maintainer.stats.disabled, 1)
 
+    def test_process_token_disables_when_primary_quota_reaches_threshold_even_if_weekly_is_below(self):
+        self.maintainer.get_token_detail = Mock(return_value={
+            "email": "a@example.com",
+            "disabled": False,
+            "access_token": "token",
+            "refresh_token": "rt",
+            "account_id": "acc",
+            "expired": "2099-01-01T00:00:00Z",
+        })
+        self.maintainer.check_token_live = Mock(return_value=(200, {
+            "json": {
+                "plan_type": "team",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 100, "limit_window_seconds": 18000},
+                    "secondary_window": {"used_percent": 28, "limit_window_seconds": 604800},
+                },
+                "credits": {"has_credits": False},
+            }
+        }))
+        self.maintainer.set_disabled_status = Mock(return_value=True)
+
+        result = self.maintainer.process_token({"name": "t2-primary"}, 1, 1)
+
+        self.assertEqual(result, "alive")
+        self.maintainer.set_disabled_status.assert_called_once()
+        args, kwargs = self.maintainer.set_disabled_status.call_args
+        self.assertEqual(args, ("t2-primary",))
+        self.assertEqual(kwargs["disabled"], True)
+        self.assertEqual(self.maintainer.stats.disabled, 1)
+
     def test_process_token_enables_when_disabled_and_weekly_quota_below_threshold(self):
         self.maintainer.get_token_detail = Mock(return_value={
             "email": "a@example.com",
@@ -151,6 +181,33 @@ class MaintainerTests(unittest.TestCase):
         self.assertEqual(args, ("t3",))
         self.assertEqual(kwargs["disabled"], False)
         self.assertEqual(self.maintainer.stats.enabled, 1)
+
+    def test_process_token_keeps_disabled_when_primary_quota_still_reaches_threshold(self):
+        self.maintainer.get_token_detail = Mock(return_value={
+            "email": "a@example.com",
+            "disabled": True,
+            "access_token": "token",
+            "refresh_token": "rt",
+            "account_id": "acc",
+            "expired": "2099-01-01T00:00:00Z",
+        })
+        self.maintainer.check_token_live = Mock(return_value=(200, {
+            "json": {
+                "plan_type": "team",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 100, "limit_window_seconds": 18000},
+                    "secondary_window": {"used_percent": 95, "limit_window_seconds": 604800},
+                },
+                "credits": {"has_credits": False},
+            }
+        }))
+        self.maintainer.set_disabled_status = Mock(return_value=True)
+
+        result = self.maintainer.process_token({"name": "t3-still-disabled"}, 1, 1)
+
+        self.assertEqual(result, "alive")
+        self.maintainer.set_disabled_status.assert_not_called()
+        self.assertEqual(self.maintainer.stats.enabled, 0)
 
     def test_process_token_refreshes_when_near_expiry(self):
         self.maintainer.settings.enable_refresh = True

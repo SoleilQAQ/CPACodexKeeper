@@ -192,35 +192,67 @@ class CPACodexKeeper:
         return primary_pct, secondary_pct
 
     def _apply_quota_policy(self, name, disabled, primary_pct, secondary_pct, logger, *, has_refresh_token=True):
-        check_pct = secondary_pct if secondary_pct is not None else primary_pct
-        check_label = "周" if secondary_pct is not None else "5h"
+        primary_reached = primary_pct >= self.settings.quota_threshold
+        secondary_present = secondary_pct is not None
+        secondary_reached = secondary_present and secondary_pct >= self.settings.quota_threshold
+
+        if secondary_present:
+            below_threshold = primary_pct < self.settings.quota_threshold and secondary_pct < self.settings.quota_threshold
+            reached_parts = []
+            if primary_reached:
+                reached_parts.append(f"5h额度 {primary_pct}%")
+            if secondary_reached:
+                reached_parts.append(f"周额度 {secondary_pct}%")
+            reached_summary = "、".join(reached_parts)
+        else:
+            below_threshold = primary_pct < self.settings.quota_threshold
+            reached_summary = f"5h额度 {primary_pct}%"
 
         if disabled:
-            if check_pct < self.settings.quota_threshold:
-                logger.log("WARN", f"已禁用但{check_label}额度已降至 {check_pct}% < {self.settings.quota_threshold}%，准备启用", indent=1)
+            if below_threshold:
+                if secondary_present:
+                    logger.log(
+                        "WARN",
+                        f"已禁用且 5h/周额度均已低于 {self.settings.quota_threshold}%，准备启用",
+                        indent=1,
+                    )
+                else:
+                    logger.log(
+                        "WARN",
+                        f"已禁用但5h额度已降至 {primary_pct}% < {self.settings.quota_threshold}%，准备启用",
+                        indent=1,
+                    )
                 if self.set_disabled_status(name, disabled=False, logger=logger):
                     logger.log("ENABLE", "已重新启用", indent=1)
                     self._inc_stat("enabled")
                 else:
                     logger.log("ERROR", "启用失败", indent=1)
                 return
-            if not has_refresh_token:
+            if not has_refresh_token and (primary_reached or secondary_reached):
                 return self._delete_token_with_reason(
                     name,
-                    f"无 Refresh Token，且{check_label}额度达到 {check_pct}% >= {self.settings.quota_threshold}%，准备删除",
+                    f"无 Refresh Token，且{reached_summary} >= {self.settings.quota_threshold}%，准备删除",
                     logger,
                 )
-            logger.log("INFO", f"已禁用，{check_label}额度 {check_pct}% >= {self.settings.quota_threshold}%，保持禁用", indent=1)
+            logger.log(
+                "INFO",
+                f"已禁用，{reached_summary} >= {self.settings.quota_threshold}%，保持禁用",
+                indent=1,
+            )
             return
 
-        if check_pct >= self.settings.quota_threshold:
+        if primary_reached or secondary_reached:
             if not has_refresh_token:
                 return self._delete_token_with_reason(
                     name,
-                    f"无 Refresh Token，且{check_label}额度达到 {check_pct}% >= {self.settings.quota_threshold}%，准备删除",
+                    f"无 Refresh Token，且{reached_summary} >= {self.settings.quota_threshold}%，准备删除",
                     logger,
                 )
-            logger.log("WARN", f"{check_label}额度达到 {check_pct}% >= {self.settings.quota_threshold}%，准备禁用", indent=1)
+            logger.log(
+                "WARN",
+                f"{reached_summary} >= {self.settings.quota_threshold}%，准备禁用",
+                indent=1,
+            )
             if self.set_disabled_status(name, disabled=True, logger=logger):
                 logger.log("DISABLE", "已禁用", indent=1)
                 self._inc_stat("disabled")
